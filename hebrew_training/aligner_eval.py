@@ -8,18 +8,28 @@ One implementation, used two ways: run it as a script over an exported gold file
 
 The metric is boundary error: for every word both a human and an aligner placed, the
 absolute difference of their start times and of their end times, pooled. Reported as the
-median, the 90th percentile, and the share of boundaries within 20, 50 and 100 ms -- the
-20 ms threshold is the strict one used to report forced-alignment accuracy.
+median, the 90th percentile, and the share of boundaries within 10, 25, 50 and 100 ms -- the
+tolerances Weber et al. (arXiv:2606.10675) report Hebrew word alignment at, so the numbers
+can be set beside theirs. (They may count per word where this counts per boundary.)
 
 The tail matters more than the median here. An aligner that is usually close and
 occasionally half a second out produces training cuts that land mid-word, so the p90 and the
 within-100 ms figure are the ones to rank by, not the mean.
+
+Significance is tested by resampling *clips*, not boundaries. Boundaries inside one clip
+share a speaker, a recording and an annotator, so they are not independent; treating ~1,500
+of them as separate samples would call almost any difference significant. Every aligner is
+scored on the same clips, so comparisons are paired: each bootstrap draw picks one set of
+clips and scores both aligners on it.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
+import itertools
 import json
+import random
 import re
 import statistics
 import unicodedata
@@ -27,7 +37,11 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 _WS = re.compile(r"\s+")
-TOLERANCES_MS = (20, 50, 100)
+TOLERANCES_MS = (10, 25, 50, 100)
+BOOTSTRAP_DRAWS = 2000
+# Pairwise tests are run on these: p90 because the tail is what cuts training clips mid-word,
+# within 50 ms because it is the figure the published Hebrew results lead with.
+TESTED_METRICS = ("p90_ms", "within_50ms")
 
 
 def norm(text: str) -> str:
@@ -73,6 +87,117 @@ def summarise(errors_ms: list[float]) -> dict:
     return out
 
 
+def _stat(s: list[float], name: str) -> float | None:
+    """One named statistic of an already-sorted pool.
+
+    Takes a sorted list so a bootstrap draw sorts once and reads every statistic off it,
+    rather than re-sorting per statistic -- that alone was most of a 5 s page load at 72 clips.
+    """
+    n = len(s)
+    if not n:
+        return None
+    if name == "median_ms":
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+    if name == "p90_ms":
+        return s[int(0.9 * (n - 1))]
+    if name.startswith("within_"):
+        t = float(name[len("within_") : -len("ms")])
+        return 100 * bisect.bisect_right(s, t) / n
+    raise ValueError(name)
+
+
+def metric(errors_ms: list[float], name: str) -> float | None:
+    """One named statistic of a pool of boundary errors."""
+    return _stat(sorted(errors_ms), name)
+
+
+def lower_is_better(name: str) -> bool:
+    return not name.startswith("within_")
+
+
+def _pool(per_clip: dict[str, list[float]], draw: list[str]) -> list[float]:
+    out: list[float] = []
+    for cid in draw:
+        out += per_clip.get(cid, [])
+    return out
+
+
+def confidence_intervals(
+    per_clip: dict[str, list[float]], names, rng: random.Random, draws: int
+) -> dict[str, list[float]]:
+    """95% interval for each statistic, from resampling this aligner's clips."""
+    ids = sorted(per_clip)
+    samples: dict[str, list[float]] = {n: [] for n in names}
+    for _ in range(draws):
+        draw = [rng.choice(ids) for _ in ids]
+        pool = sorted(_pool(per_clip, draw))
+        for n in names:
+            v = _stat(pool, n)
+            if v is not None:
+                samples[n].append(v)
+    out = {}
+    for n, vals in samples.items():
+        vals.sort()
+        if vals:
+            out[n] = [round(vals[int(0.025 * (len(vals) - 1))], 1),
+                      round(vals[int(0.975 * (len(vals) - 1))], 1)]
+    return out
+
+
+def paired_test(
+    a: dict[str, list[float]],
+    b: dict[str, list[float]],
+    name: str,
+    rng: random.Random,
+    draws: int,
+) -> dict | None:
+    """Is aligner a different from aligner b on `name`, beyond what the clip sample allows?
+
+    Both are scored on the same resampled clips in every draw, so clip-to-clip variation --
+    an easy recording, a mumbling speaker -- cancels out of the difference instead of
+    swamping it.
+    """
+    common = sorted(set(a) & set(b))
+    if len(common) < 2:
+        return None
+    observed_a = metric(_pool(a, common), name)
+    observed_b = metric(_pool(b, common), name)
+    if observed_a is None or observed_b is None:
+        return None
+    observed = observed_a - observed_b
+    diffs = []
+    for _ in range(draws):
+        draw = [rng.choice(common) for _ in common]
+        va, vb = metric(_pool(a, draw), name), metric(_pool(b, draw), name)
+        if va is not None and vb is not None:
+            diffs.append(va - vb)
+    diffs.sort()
+    # Two-sided: how often a redrawn sample lands on the other side of zero.
+    below = sum(d <= 0 for d in diffs) / len(diffs)
+    above = sum(d >= 0 for d in diffs) / len(diffs)
+    p = min(1.0, 2 * min(below, above))
+    return {
+        "diff": round(observed, 1),
+        "ci": [round(diffs[int(0.025 * (len(diffs) - 1))], 1),
+               round(diffs[int(0.975 * (len(diffs) - 1))], 1)],
+        "p": round(p, 4),
+        "clips": len(common),
+    }
+
+
+def holm(pvalues: list[float]) -> list[float]:
+    """Holm-Bonferroni: several pairwise tests at once would otherwise find a 'significant'
+    difference by chance roughly once in every twenty."""
+    m = len(pvalues)
+    order = sorted(range(m), key=lambda i: pvalues[i])
+    adjusted = [0.0] * m
+    running = 0.0
+    for rank, i in enumerate(order):
+        running = max(running, min(1.0, (m - rank) * pvalues[i]))
+        adjusted[i] = running
+    return adjusted
+
+
 def boundary_errors(pairs: list[tuple[dict, dict]]) -> list[float]:
     out = []
     for h, a in pairs:
@@ -86,6 +211,8 @@ def evaluate(
     gold: list[dict],
     extra_labels: dict | None = None,
     exclude: set[str] | frozenset[str] = frozenset(),
+    draws: int = BOOTSTRAP_DRAWS,
+    seed: int = 0,
 ) -> dict:
     """Score every aligner label against every human mark.
 
@@ -135,6 +262,7 @@ def evaluate(
         "annotators": {name: len(m) for name, m in humans.items()},
     }
 
+    errors_by_aligner: dict[str, dict[str, list[float]]] = {}
     for source, words_by_id in sorted(aligners.items()):
         pooled, per_clip, paired, human_words = [], {}, 0, 0
         for marks in humans.values():
@@ -151,21 +279,77 @@ def evaluate(
         stats = summarise(pooled)
         stats["words_paired_pct"] = round(100 * paired / human_words, 1) if human_words else 0.0
         result["aligners"][source] = stats
+        per_clip = {cid: errs for cid, errs in per_clip.items() if errs}
+        errors_by_aligner[source] = per_clip
         for cid, errs in per_clip.items():
-            if errs:
-                result["clips"].setdefault(cid, {})[source] = round(statistics.median(errs), 1)
+            result["clips"].setdefault(cid, {})[source] = round(statistics.median(errs), 1)
 
     # The reference floor: where two people marked the same clip. An aligner inside this
     # is already as good as the humans it is being judged by.
     names = sorted(humans)
-    between = []
+    human_per_clip: dict[str, list[float]] = {}
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             a, b = humans[names[i]], humans[names[j]]
             for cid in set(a) & set(b):
-                between += boundary_errors(pair_words(a[cid], b[cid]))
+                human_per_clip.setdefault(cid, []).extend(
+                    boundary_errors(pair_words(a[cid], b[cid]))
+                )
+    between = [e for errs in human_per_clip.values() for e in errs]
     if between:
         result["human_agreement"] = summarise(between)
+        result["human_agreement"]["clips"] = len(human_per_clip)
+
+    # ---- uncertainty ----
+    rng = random.Random(seed)
+    ci_names = ["median_ms", "p90_ms"] + [f"within_{t}ms" for t in TOLERANCES_MS]
+    for source, per_clip in errors_by_aligner.items():
+        if per_clip:
+            result["aligners"][source]["clips"] = len(per_clip)
+            result["aligners"][source]["ci"] = confidence_intervals(per_clip, ci_names, rng, draws)
+    if len(human_per_clip) >= 2:
+        result["human_agreement"]["ci"] = confidence_intervals(human_per_clip, ci_names, rng, draws)
+
+    tests = []
+    scored = sorted(s for s, pc in errors_by_aligner.items() if pc)
+    for a, b in itertools.combinations(scored, 2):
+        for name in TESTED_METRICS:
+            t = paired_test(errors_by_aligner[a], errors_by_aligner[b], name, rng, draws)
+            if t is None:
+                continue
+            better = a if (t["diff"] < 0) == lower_is_better(name) else b
+            tests.append({"a": a, "b": b, "metric": name, "better": better, **t})
+    for t, adj in zip(tests, holm([t["p"] for t in tests])):
+        t["p_holm"] = round(adj, 4)
+        t["significant"] = adj < 0.05
+    result["comparisons"] = tests
+    result["draws"] = draws
+
+    # ---- anchoring ----
+    # The tool opens every clip on one aligner's boundaries and the annotator moves them from
+    # there. A boundary nobody moved is then scored as that aligner being exactly right --
+    # whether the person checked it or skipped it. Measured on the first 10 clips: 33% of
+    # human boundaries were byte-identical to the seed, against 7% and 1% for the others.
+    # So the seed is graded against a reference built partly from its own output, and any
+    # comparison involving it is not a fair test.
+    seeds = {e["labels"][0]["source"] for e in entries if e.get("labels")}
+    seed = seeds.pop() if len(seeds) == 1 else None
+    result["seed"] = seed
+    for source, words_by_id in aligners.items():
+        same = total = 0
+        for marks in humans.values():
+            for cid, hwords in marks.items():
+                awords = words_by_id.get(cid)
+                if not awords:
+                    continue
+                for h, a in pair_words(hwords, awords):
+                    for k in ("start", "end"):
+                        total += 1
+                        same += abs(float(h[k]) - float(a[k])) < 0.0005
+        if source in result["aligners"] and total:
+            result["aligners"][source]["unmoved_pct"] = round(100 * same / total, 1)
+    for t in tests:
+        t["fair"] = seed not in (t["a"], t["b"])
 
     for cid, row in result["clips"].items():
         e = by_id[cid]
@@ -175,7 +359,8 @@ def evaluate(
 
 
 def load_jsonl(path: Path) -> list[dict]:
-    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
 
 
 def legacy_label(path: Path, entries: list[dict]) -> dict[str, list]:
@@ -236,6 +421,35 @@ def main() -> None:
         within = "".join(f"{h[f'within_{t}ms']:>8}%" for t in TOLERANCES_MS)
         print(f"{'human-human':<12}{h['median_ms']:>7}ms{h['p90_ms']:>7}ms{within}"
               f"   ({h['boundaries']} boundaries)")
+
+    print(f"\n95% intervals, from resampling clips ({result['draws']} draws):")
+    for source, s in ranked:
+        ci = s.get("ci") or {}
+        if ci:
+            print(f"  {source:<11} median {ci['median_ms'][0]:>5}-{ci['median_ms'][1]:<5} ms"
+                  f"   p90 {ci['p90_ms'][0]:>5}-{ci['p90_ms'][1]:<6} ms"
+                  f"   <=50ms {ci['within_50ms'][0]:>4}-{ci['within_50ms'][1]:<4}%"
+                  f"   ({s['clips']} clips)")
+
+    print("\nIs the difference real?  (paired, clip-level; Holm-corrected across all tests)")
+    for t in result["comparisons"]:
+        unit = "%" if t["metric"].startswith("within_") else " ms"
+        verdict = (f"yes -- {t['better']} is better" if t["significant"]
+                   else "no  -- could be chance")
+        if not t.get("fair", True):
+            verdict += "   [unfair: marks started from " + result["seed"] + "]"
+        print(f"  {t['a']:>9} vs {t['b']:<9} {t['metric']:<12} diff {t['diff']:>+7}{unit}"
+              f"  [{t['ci'][0]:>+.1f}, {t['ci'][1]:>+.1f}]  p={t['p_holm']:<6}  {verdict}")
+
+    if result.get("seed"):
+        print(f"\nANCHORING: every clip opens on {result['seed']}'s boundaries. Share of human "
+              "boundaries left exactly where an aligner put them:")
+        for source, s in ranked:
+            if "unmoved_pct" in s:
+                tag = "   <- the seed" if source == result["seed"] else ""
+                print(f"  {source:<11} {s['unmoved_pct']:>5}%{tag}")
+        print(f"  {result['seed']} is graded against marks partly built from its own output;"
+              " its scores are flattered and comparisons with it are not a fair test.")
     if args.out:
         args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"-> {args.out}")
