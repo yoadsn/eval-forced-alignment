@@ -86,12 +86,15 @@ def main() -> None:
                    help=f"Comma-separated subset of: {', '.join(ALIGNERS)}.")
     p.add_argument(
         "--text",
-        choices=["dataset", "corrected"],
-        default="dataset",
-        help="Which transcript the aligners are given. 'dataset' is the original one, the "
-        "realistic case -- it is what they would get over a whole untagged corpus, missing "
-        "words and all. 'corrected' is each annotator's edited word list, which measures "
-        "timing skill alone; a clip is then aligned once per annotator, since two people do "
+        choices=["corrected", "dataset"],
+        default="corrected",
+        help="Which transcript the aligners are given. Default 'corrected': each annotator's "
+        "edited word list, which measures timing skill rather than punishing an aligner for "
+        "words the transcript never had -- the marks here add 15%% more words than the "
+        "dataset transcript, and an aligner with no word for a stretch of speech stretches "
+        "some word across it. 'dataset' is the original one, the "
+        "realistic case: what they would get over a whole untagged corpus, missing words and "
+        "all. Under 'corrected' a clip is aligned once per annotator, since two people do "
         "not always correct it the same way.",
     )
     p.add_argument("--exclude", action="append", default=[],
