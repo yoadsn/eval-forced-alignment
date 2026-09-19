@@ -25,10 +25,10 @@ more tagging, run it again and only the new clips are aligned.
 | name | what | environment |
 |---|---|---|
 | *(the dataset's own label)* | e.g. `ivrit-ai`: the timings shipped with the data (Whisper + stable-ts) | none |
-| `hebrew` | wav2vec2 Hebrew CTC — `imvladikon/wav2vec2-xls-r-300m-hebrew` | `EVAL_PY_CTC` |
-| `mms` | MMS forced aligner — `MahmoudAshraf/mms-300m-1130-forced-aligner` | `EVAL_PY_CTC` |
-| `stable_ts_turbo` | stable-ts `align()` on faster-whisper, `ivrit-ai/whisper-large-v3-turbo-ct2` | `EVAL_PY_STABLE_TS` |
-| `mwa` | Multilingual Word Aligner (arXiv:2606.10675), `buckeye` — the align button's model | `EVAL_PY_MWA` |
+| `wav2vec2-hebrew` | CTC forced alignment — `imvladikon/wav2vec2-xls-r-300m-hebrew` | `EVAL_PY_CTC` |
+| `mms` | CTC forced alignment — Meta MMS, `MahmoudAshraf/mms-300m-1130-forced-aligner` | `EVAL_PY_CTC` |
+| `whisper-stable-ts` | stable-ts `align()` on faster-whisper, `ivrit-ai/whisper-large-v3-turbo-ct2` | `EVAL_PY_STABLE_TS` |
+| `mwa-buckeye` | Multilingual Word Aligner (arXiv:2606.10675), `buckeye` checkpoint — the align button's model | `EVAL_PY_MWA` |
 
 All five time **the dataset's own word list** — the one annotators saw and edited — so every
 aligner word pairs with a human word. Metric: |aligner − human| on each word start and end,
@@ -53,7 +53,7 @@ EVAL_MWA_REPO=C:/path/to/Multilingual-Word-Aligner
 A CUDA GPU is assumed (cu121 wheels below). On 72 clips with an RTX 4060: CTC ~1 min each,
 stable-ts ~15 s, MWA a few minutes.
 
-**CTC (hebrew, mms)**
+**CTC (wav2vec2-hebrew, mms)**
 ```
 uv venv --python 3.11 ctc-env
 uv pip install --python ctc-env torch torchaudio --index-url https://download.pytorch.org/whl/cu121

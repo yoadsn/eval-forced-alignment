@@ -406,25 +406,25 @@ def report(result: dict) -> None:
     if result["unmatched_marks"]:
         print(f"  {result['unmatched_marks']} marks matched no clip and were skipped")
     cols = "".join(f"{'<=' + str(t) + 'ms':>9}" for t in TOLERANCES_MS)
-    print(f"{'aligner':<12}{'median':>9}{'p90':>9}{cols}{'paired':>9}")
+    print(f"{'aligner':<18}{'median':>9}{'p90':>9}{cols}{'paired':>9}")
     ranked = sorted(result["aligners"].items(), key=lambda kv: kv[1].get("p90_ms", 1e9))
     for source, s in ranked:
         if not s.get("boundaries"):
-            print(f"{source:<12}  (no overlap with human marks)")
+            print(f"{source:<18}  (no overlap with human marks)")
             continue
         within = "".join(f"{s[f'within_{t}ms']:>8}%" for t in TOLERANCES_MS)
-        print(f"{source:<12}{s['median_ms']:>7}ms{s['p90_ms']:>7}ms{within}{s['words_paired_pct']:>8}%")
+        print(f"{source:<18}{s['median_ms']:>7}ms{s['p90_ms']:>7}ms{within}{s['words_paired_pct']:>8}%")
     if result["human_agreement"]:
         h = result["human_agreement"]
         within = "".join(f"{h[f'within_{t}ms']:>8}%" for t in TOLERANCES_MS)
-        print(f"{'human-human':<12}{h['median_ms']:>7}ms{h['p90_ms']:>7}ms{within}"
+        print(f"{'human-human':<18}{h['median_ms']:>7}ms{h['p90_ms']:>7}ms{within}"
               f"   ({h['boundaries']} boundaries)")
 
     print(f"\n95% intervals, from resampling clips ({result['draws']} draws):")
     for source, s in ranked:
         ci = s.get("ci") or {}
         if ci:
-            print(f"  {source:<11} median {ci['median_ms'][0]:>5}-{ci['median_ms'][1]:<5} ms"
+            print(f"  {source:<17} median {ci['median_ms'][0]:>5}-{ci['median_ms'][1]:<5} ms"
                   f"   p90 {ci['p90_ms'][0]:>5}-{ci['p90_ms'][1]:<6} ms"
                   f"   <=50ms {ci['within_50ms'][0]:>4}-{ci['within_50ms'][1]:<4}%"
                   f"   ({s['clips']} clips)")
@@ -448,7 +448,7 @@ def report(result: dict) -> None:
         for source, s in ranked:
             if "unmoved_pct" in s:
                 tag = "   <- the seed" if source == result["seed"] else ""
-                print(f"  {source:<11} {s['unmoved_pct']:>5}%{tag}")
+                print(f"  {source:<17} {s['unmoved_pct']:>5}%{tag}")
         print(f"  {result['seed']} is graded against marks partly built from its own output;"
               " its scores are flattered and comparisons with it are not a fair test.")
 

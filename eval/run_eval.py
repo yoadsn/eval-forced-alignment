@@ -21,9 +21,9 @@ new clips are aligned. Delete a labels file to redo that aligner from scratch.
 
 The aligners need incompatible environments, so each runs in its own interpreter, set once in
 .env (see eval/README.md):
-    EVAL_PY_CTC        torch + transformers + uroman           -> hebrew, mms
-    EVAL_PY_STABLE_TS  torch 2.4 + stable-ts + faster-whisper   -> stable_ts_turbo
-    EVAL_PY_MWA        the MWA repo's own environment           -> mwa
+    EVAL_PY_CTC        torch + transformers + uroman           -> wav2vec2-hebrew, mms
+    EVAL_PY_STABLE_TS  torch 2.4 + stable-ts + faster-whisper   -> whisper-stable-ts
+    EVAL_PY_MWA        the MWA repo's own environment           -> mwa-buckeye
     EVAL_MWA_REPO      path to a clone of MLSpeech/Multilingual-Word-Aligner
 An aligner whose interpreter is not set is skipped, with a note -- the rest still run.
 """
@@ -50,13 +50,13 @@ except ImportError:
 
 # name -> (runner script, interpreter variable, extra args, extra environment)
 ALIGNERS = {
-    "hebrew": ("ctc.py", "EVAL_PY_CTC", ["--model", "imvladikon/wav2vec2-xls-r-300m-hebrew"], {}),
+    "wav2vec2-hebrew": ("ctc.py", "EVAL_PY_CTC", ["--model", "imvladikon/wav2vec2-xls-r-300m-hebrew"], {}),
     "mms": ("ctc.py", "EVAL_PY_CTC", ["--model", "MahmoudAshraf/mms-300m-1130-forced-aligner"], {}),
-    "stable_ts_turbo": ("stable_ts.py", "EVAL_PY_STABLE_TS",
+    "whisper-stable-ts": ("stable_ts.py", "EVAL_PY_STABLE_TS",
                         ["--model", "ivrit-ai/whisper-large-v3-turbo-ct2"],
                         # see stable_ts.py: two OpenMP runtimes, made safe by one thread each
                         {"KMP_DUPLICATE_LIB_OK": "TRUE", "OMP_NUM_THREADS": "1", "PYTHONUTF8": "1"}),
-    "mwa": ("mwa.py", "EVAL_PY_MWA", ["--model", "buckeye"], {"PYTHONUTF8": "1"}),
+    "mwa-buckeye": ("mwa.py", "EVAL_PY_MWA", ["--model", "buckeye"], {"PYTHONUTF8": "1"}),
 }
 
 
@@ -146,7 +146,7 @@ def main() -> None:
         else:
             cmd = [py, str(HERE / "aligners" / script), "--manifest", str(run / "clips.jsonl"),
                    "--out", str(out), *extra]
-            if name == "mwa":
+            if name == "mwa-buckeye":
                 repo = os.environ.get("EVAL_MWA_REPO")
                 if not repo:
                     print(f"\n[{name}] skipped: set EVAL_MWA_REPO to the Multilingual-Word-Aligner clone")
