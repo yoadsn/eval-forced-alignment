@@ -86,6 +86,24 @@ uv pip install --python .venv --no-deps -e .
 Its `requirements.txt` pins Linux-only packages (triton, nvidia-*), hence the list above.
 It cannot align words containing digits — those clips are reported and skipped.
 
+## Which transcript the aligners get
+
+`--text dataset` (default) gives them the dataset's original transcript. That is the
+realistic case: it is what they would get over a whole untagged corpus, missing words and
+all. On these 72 clips the humans added 15% more words than the transcript had, and an
+aligner with no word for a stretch of speech must stretch some word across it.
+
+`--text corrected` gives each annotator's own edited word list, which measures timing skill
+alone. A clip is then aligned once per annotator, since two people do not always correct it
+the same way. Two caveats:
+
+- A label the dataset ships (e.g. `ivrit-ai`) is **not** re-run -- it is stored timings, made
+  against the original text. Its row in a corrected run is not comparable with the rest.
+- Where annotators corrected a clip differently, a dataset row can only hold one label per
+  source, so the lanes show one person's alignment. `eval.json` scores each person against
+  their own, so the dashboard's recomputed figures differ slightly there (3 of 72 clips
+  here). `eval.json` is the one to quote.
+
 ## Viewing a run
 
 ```

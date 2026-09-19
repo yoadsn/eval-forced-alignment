@@ -60,6 +60,14 @@ ALIGNERS = {
 }
 
 
+def per_annotator_counts(marks) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for m in marks:
+        who = m.get("annotator", "anon")
+        counts[who] = counts.get(who, 0) + 1
+    return list(counts.items())
+
+
 def load_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -76,6 +84,16 @@ def main() -> None:
     p.add_argument("--run", type=Path, help="Run folder (default: data/eval_runs/<dataset name>).")
     p.add_argument("--aligners", default=",".join(ALIGNERS),
                    help=f"Comma-separated subset of: {', '.join(ALIGNERS)}.")
+    p.add_argument(
+        "--text",
+        choices=["dataset", "corrected"],
+        default="dataset",
+        help="Which transcript the aligners are given. 'dataset' is the original one, the "
+        "realistic case -- it is what they would get over a whole untagged corpus, missing "
+        "words and all. 'corrected' is each annotator's edited word list, which measures "
+        "timing skill alone; a clip is then aligned once per annotator, since two people do "
+        "not always correct it the same way.",
+    )
     p.add_argument("--exclude", action="append", default=[],
                    help="Annotator to leave out of scoring, e.g. a test account. Repeatable.")
     args = p.parse_args()
@@ -93,12 +111,24 @@ def main() -> None:
     if not marked:
         raise SystemExit("nothing to score")
 
-    # 1. the clips the aligners get: the dataset's own word list, which is what people edited
-    clips = [{"id": cid, "audio": str((dataset / entries[cid]["audio"]).resolve()),
-              "duration": float(entries[cid]["duration"]), "text": entries[cid]["text"],
-              "words": [w["word"] for w in entries[cid]["labels"][0]["words"]]}
-             for cid in marked]
+    # 1. the clips the aligners get
+    def clip_row(key, cid, words):
+        return {"id": key, "audio": str((dataset / entries[cid]["audio"]).resolve()),
+                "duration": float(entries[cid]["duration"]), "text": " ".join(words),
+                "words": words}
+
+    if args.text == "corrected":
+        # One alignment per (clip, annotator): corrected word lists differ between people, so
+        # a single alignment per clip would time one person's words against another's marks.
+        clips = [clip_row(f"{m['id']}#{m.get('annotator', 'anon')}", m["id"],
+                          [w["word"] for w in m["words"]])
+                 for m in marks if m.get("id") in entries]
+    else:
+        clips = [clip_row(cid, cid, [w["word"] for w in entries[cid]["labels"][0]["words"]])
+                 for cid in marked]
+    run.mkdir(parents=True, exist_ok=True)
     write_jsonl(run / "clips.jsonl", clips)
+    print(f"aligning on the {args.text} transcript: {len(clips)} alignments")
 
     # 2. every aligner, each in its own interpreter; each skips clips it has already done
     labels = {}
@@ -127,17 +157,48 @@ def main() -> None:
         if out.exists():
             labels[name] = {r["id"]: r["words"] for r in load_jsonl(out)}
 
+    # With corrected text the keys are "<clip>#<annotator>"; split them back apart.
+    pair_labels: dict = {}
+    if args.text == "corrected":
+        for name, by_key in labels.items():
+            pairs = {}
+            for key, words in by_key.items():
+                cid, _, who = key.partition("#")
+                pairs[(cid, who)] = words
+            pair_labels[name] = pairs
+        labels = {name: {} for name in labels}
+
     # 3. a dataset of just the marked clips, with every aligner attached as a label. The
     #    dataset's own labels stay first, so the tool still opens clips on the same seed.
     scored = run / "dataset"
     (scored / "audio").mkdir(parents=True, exist_ok=True)
+    # With corrected text a clip can have one alignment per annotator, but a dataset row
+    # holds one label per source. Where people corrected a clip differently, the lanes show
+    # the alignment of whoever marked the most clips; eval.json is scored against each
+    # annotator's own.
+    order = [name for name, _ in sorted(per_annotator_counts(marks), key=lambda kv: -kv[1])]
+    divergent = set()
+
+    def label_for(name, cid):
+        if args.text != "corrected":
+            return labels.get(name, {}).get(cid)
+        pairs = pair_labels.get(name, {})
+        options = [(who, words) for (c, who), words in pairs.items() if c == cid]
+        if not options:
+            return None
+        if len({json.dumps(w, ensure_ascii=False) for _, w in options}) > 1:
+            divergent.add(cid)
+        options.sort(key=lambda kv: order.index(kv[0]) if kv[0] in order else 99)
+        return options[0][1]
+
     rows = []
     for cid in marked:
         e = json.loads(json.dumps(entries[cid]))
-        for name, by_id in labels.items():
-            if cid in by_id:
+        for name in labels:
+            words = label_for(name, cid)
+            if words:
                 e["labels"] = [lb for lb in e["labels"] if lb["source"] != name]
-                e["labels"].append({"source": name, "words": by_id[cid]})
+                e["labels"].append({"source": name, "words": words})
         src = dataset / e["audio"]
         dst = scored / e["audio"]
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -157,13 +218,20 @@ def main() -> None:
     for name, rs in per.items():
         write_jsonl(run / "marks" / f"{name}.jsonl", rs)
 
+    if divergent:
+        print(f"  {len(divergent)} clips were corrected differently by different people; "
+              "their lanes show one person's alignment, the scores use each person's own")
+
     # 5. score -- the same module the dashboard runs
     print("\n" + "=" * 70)
-    cmd = [sys.executable, "-m", "hebrew_training.aligner_eval", "--dataset", str(scored),
-           "--gold", str(args.marks), "--out", str(run / "eval.json")]
-    for name in args.exclude:
-        cmd += ["--exclude", name]
-    subprocess.run(cmd, cwd=ROOT, env={**os.environ, "PYTHONIOENCODING": "utf-8"}, check=True)
+    sys.path.insert(0, str(ROOT))
+    from hebrew_training.aligner_eval import evaluate, report
+
+    result = evaluate(rows, marks, exclude=set(args.exclude), pair_labels=pair_labels or None)
+    result["text_source"] = args.text
+    report(result)
+    (run / "eval.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"-> {run / 'eval.json'}")
 
     print("\nTo see it on the dashboard:")
     print(f"  python -m hebrew_training.align_tag_server --datasets-folder \"{run}\" --dataset dataset "

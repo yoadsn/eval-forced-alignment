@@ -213,12 +213,16 @@ def evaluate(
     exclude: set[str] | frozenset[str] = frozenset(),
     draws: int = BOOTSTRAP_DRAWS,
     seed: int = 0,
+    pair_labels: dict | None = None,
 ) -> dict:
     """Score every aligner label against every human mark.
 
     entries      dataset manifest rows (id, text, labels=[{source, words}])
     gold         human marks: {id, words, annotator}; `text` is used when `id` is absent
     extra_labels {source: {id: words}} for aligners not stored in the dataset itself
+    pair_labels  {source: {(clip id, annotator): words}} for aligners run on each
+                 annotator's own corrected text, where one clip has as many alignments as
+                 it has annotators. Falls back to the clip's label when a pair is absent.
     exclude      annotator names that are not people. A test row is aligner output under a
                  human-looking name: left in, it counts as "human disagreement" and makes
                  two careful people look worse than the aligners they are judging.
@@ -267,11 +271,22 @@ def evaluate(
     }
 
     errors_by_aligner: dict[str, dict[str, list[float]]] = {}
-    for source, words_by_id in sorted(aligners.items()):
+    pair_labels = pair_labels or {}
+
+    def aligner_words(source, cid, annotator):
+        """This annotator's alignment of this clip when the aligner was run on their own
+        corrected text, otherwise the one label the clip has."""
+        by_pair = pair_labels.get(source)
+        if by_pair and (cid, annotator) in by_pair:
+            return by_pair[(cid, annotator)]
+        return aligners.get(source, {}).get(cid)
+
+    for source in sorted(set(aligners) | set(pair_labels)):
+        words_by_id = aligners.get(source, {})
         pooled, per_clip, paired, human_words = [], {}, 0, 0
-        for marks in humans.values():
+        for annotator, marks in humans.items():
             for cid, hwords in marks.items():
-                awords = words_by_id.get(cid)
+                awords = aligner_words(source, cid, annotator)
                 if not awords:
                     continue
                 pairs = pair_words(hwords, awords)
@@ -339,11 +354,11 @@ def evaluate(
     seeds = {e["labels"][0]["source"] for e in entries if e.get("labels")}
     seed = seeds.pop() if len(seeds) == 1 else None
     result["seed"] = seed
-    for source, words_by_id in aligners.items():
+    for source in set(aligners) | set(pair_labels):
         same = total = 0
-        for marks in humans.values():
+        for annotator, marks in humans.items():
             for cid, hwords in marks.items():
-                awords = words_by_id.get(cid)
+                awords = aligner_words(source, cid, annotator)
                 if not awords:
                     continue
                 for h, a in pair_words(hwords, awords):
@@ -385,34 +400,8 @@ def legacy_label(path: Path, entries: list[dict]) -> dict[str, list]:
     return out
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--dataset", type=Path, required=True, help="Folder holding manifest.jsonl.")
-    p.add_argument("--gold", type=Path, required=True, help="Human marks, as /api/export writes them.")
-    p.add_argument(
-        "--extra",
-        action="append",
-        default=[],
-        metavar="NAME=PATH",
-        help="An aligner outside the dataset, in the legacy per-source jsonl layout.",
-    )
-    p.add_argument(
-        "--exclude",
-        action="append",
-        default=[],
-        metavar="NAME",
-        help="Annotator to leave out, e.g. a test account. Repeatable.",
-    )
-    p.add_argument("--out", type=Path, help="Write the full result as json.")
-    args = p.parse_args()
-
-    entries = load_jsonl(args.dataset / "manifest.jsonl")
-    extra = {}
-    for spec in args.extra:
-        name, _, path = spec.partition("=")
-        extra[name] = legacy_label(Path(path), entries)
-    result = evaluate(entries, load_jsonl(args.gold), extra, set(args.exclude))
-
+def report(result: dict) -> None:
+    """Print a result the way the script does, so the pipeline and the CLI agree."""
     print(f"{result['marked_clips']} clips marked by {result['annotators']}")
     if result["unmatched_marks"]:
         print(f"  {result['unmatched_marks']} marks matched no clip and were skipped")
@@ -462,6 +451,37 @@ def main() -> None:
                 print(f"  {source:<11} {s['unmoved_pct']:>5}%{tag}")
         print(f"  {result['seed']} is graded against marks partly built from its own output;"
               " its scores are flattered and comparisons with it are not a fair test.")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--dataset", type=Path, required=True, help="Folder holding manifest.jsonl.")
+    p.add_argument("--gold", type=Path, required=True, help="Human marks, as /api/export writes them.")
+    p.add_argument(
+        "--extra",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="An aligner outside the dataset, in the legacy per-source jsonl layout.",
+    )
+    p.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Annotator to leave out, e.g. a test account. Repeatable.",
+    )
+    p.add_argument("--out", type=Path, help="Write the full result as json.")
+    args = p.parse_args()
+
+    entries = load_jsonl(args.dataset / "manifest.jsonl")
+    extra = {}
+    for spec in args.extra:
+        name, _, path = spec.partition("=")
+        extra[name] = legacy_label(Path(path), entries)
+    result = evaluate(entries, load_jsonl(args.gold), extra, set(args.exclude))
+
+    report(result)
     if args.out:
         args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"-> {args.out}")
