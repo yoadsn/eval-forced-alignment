@@ -349,7 +349,12 @@ def evaluate(
         if source in result["aligners"] and total:
             result["aligners"][source]["unmoved_pct"] = round(100 * same / total, 1)
     for t in tests:
-        t["fair"] = seed not in (t["a"], t["b"])
+        # The head start only ever helps the seed. So a comparison it wins may owe the win
+        # to that, but one it loses was lost *despite* it -- the bias pushed the other way,
+        # and the verdict is stronger for it, not weaker.
+        involved = seed in (t["a"], t["b"])
+        t["fair"] = not involved or t["better"] != seed
+        t["seed_lost_anyway"] = involved and t["better"] != seed and t["significant"]
 
     for cid, row in result["clips"].items():
         e = by_id[cid]
@@ -438,6 +443,8 @@ def main() -> None:
                    else "no  -- could be chance")
         if not t.get("fair", True):
             verdict += "   [unfair: marks started from " + result["seed"] + "]"
+        elif t.get("seed_lost_anyway"):
+            verdict += "   [holds despite " + result["seed"] + "'s head start]"
         print(f"  {t['a']:>9} vs {t['b']:<9} {t['metric']:<12} diff {t['diff']:>+7}{unit}"
               f"  [{t['ci'][0]:>+.1f}, {t['ci'][1]:>+.1f}]  p={t['p_holm']:<6}  {verdict}")
 
