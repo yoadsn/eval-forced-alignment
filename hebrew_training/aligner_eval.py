@@ -243,8 +243,10 @@ def evaluate(
 
     humans: dict[str, dict[str, list]] = {}
     unmatched = 0
+    left_out: set[str] = set()
     for row in gold:
         if row.get("annotator") in exclude:
+            left_out.add(row["annotator"])
             continue
         entry = resolve(row)
         if entry is None:
@@ -260,6 +262,8 @@ def evaluate(
         "unmatched_marks": unmatched,
         "marked_clips": len(marked_ids),
         "annotators": {name: len(m) for name, m in humans.items()},
+        # only the names that were actually present and left out, not the whole exclude list
+        "left_out": sorted(left_out),
     }
 
     errors_by_aligner: dict[str, dict[str, list[float]]] = {}
@@ -445,8 +449,9 @@ def main() -> None:
             verdict += "   [unfair: marks started from " + result["seed"] + "]"
         elif t.get("seed_lost_anyway"):
             verdict += "   [holds despite " + result["seed"] + "'s head start]"
+        p = "<0.001" if t["p_holm"] == 0 else f"={t['p_holm']}"
         print(f"  {t['a']:>9} vs {t['b']:<9} {t['metric']:<12} diff {t['diff']:>+7}{unit}"
-              f"  [{t['ci'][0]:>+.1f}, {t['ci'][1]:>+.1f}]  p={t['p_holm']:<6}  {verdict}")
+              f"  [{t['ci'][0]:>+.1f}, {t['ci'][1]:>+.1f}]  p{p:<7} {verdict}")
 
     if result.get("seed"):
         print(f"\nANCHORING: every clip opens on {result['seed']}'s boundaries. Share of human "
