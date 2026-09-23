@@ -56,8 +56,17 @@ ALIGNERS = {
                         ["--model", "ivrit-ai/whisper-large-v3-turbo-ct2"],
                         # see stable_ts.py: two OpenMP runtimes, made safe by one thread each
                         {"KMP_DUPLICATE_LIB_OK": "TRUE", "OMP_NUM_THREADS": "1", "PYTHONUTF8": "1"}),
+    # Both MWA checkpoints. The paper's unseen-language numbers, Hebrew included, are the
+    # timit one: "across all tested languages, the TIMIT-trained model consistently
+    # outperforms the Buckeye-trained version". Its Hebrew table is not buckeye's.
     "mwa-buckeye": ("mwa.py", "EVAL_PY_MWA", ["--model", "buckeye"], {"PYTHONUTF8": "1"}),
+    "mwa-timit": ("mwa.py", "EVAL_PY_MWA", ["--model", "timit"], {"PYTHONUTF8": "1"}),
 }
+
+# Labels that are produced from another label rather than by aligning audio, so they have no
+# runner here. eval/correct_mms.py writes this one; if its file is present it is scored and
+# shown next to the aligner it was derived from.
+DERIVED = ("mms-corrected",)
 
 
 def per_annotator_counts(marks) -> list[tuple[str, int]]:
@@ -146,7 +155,7 @@ def main() -> None:
         else:
             cmd = [py, str(HERE / "aligners" / script), "--manifest", str(run / "clips.jsonl"),
                    "--out", str(out), *extra]
-            if name == "mwa-buckeye":
+            if script == "mwa.py":
                 repo = os.environ.get("EVAL_MWA_REPO")
                 if not repo:
                     print(f"\n[{name}] skipped: set EVAL_MWA_REPO to the Multilingual-Word-Aligner clone")
@@ -157,6 +166,12 @@ def main() -> None:
                 print(f"\n[{name}]", flush=True)
                 env = {**os.environ, "PYTHONIOENCODING": "utf-8", **env_extra}
                 subprocess.run(cmd, env=env, check=False)
+
+    # Score every aligner that has an output file, not only the ones just run. --aligners
+    # says which to *align*; taking it to mean which to *score* silently rebuilt the dataset
+    # and eval.json with one aligner in them and threw the rest away.
+    for name in (*ALIGNERS, *DERIVED):
+        out = run / "labels" / f"{name}.jsonl"
         if out.exists():
             labels[name] = {r["id"]: r["words"] for r in load_jsonl(out)}
 
