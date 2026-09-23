@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 BEFORE, AFTER = 0.30, 0.50
-MMS_C, HUM_C, WAVE_C = "#2563eb", "#15803d", "#c7cbd1"
+MMS_C, HUM_C, FIX_C, WAVE_C = "#2563eb", "#15803d", "#b45309", "#c7cbd1"
 
 
 def main() -> None:
@@ -46,8 +46,18 @@ def main() -> None:
     bf = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bf)
 
-    rows = [r for r in bf.build(args.run, "mms", {"probe"}) if r["gap_after"] >= args.min_pause]
-    rows.sort(key=lambda r: -(r["h_end"] - r["end"]))
+    # The correction is recomputed here rather than read from the written labels, so the
+    # picture cannot drift from what eval/correct_mms.py actually does.
+    cm_spec = importlib.util.spec_from_file_location("cm", ROOT / "eval" / "correct_mms.py")
+    cm = importlib.util.module_from_spec(cm_spec)
+    cm_spec.loader.exec_module(cm)
+    all_rows = cm.attach_envelopes(bf.build(args.run, "mms", {"probe"}), args.dataset)
+    model = json.loads((args.run / "correction.json").read_text(encoding="utf-8"))
+    for r in all_rows:
+        r["fixed_end"] = cm.apply_end(bf, r, model["shifts"], model["quiet"],
+                                      model["cap"], model["pause_min"])
+    rows = [r for r in all_rows if r["gap_after"] >= args.min_pause]
+    rows.sort(key=lambda r: -(abs(r["h_end"] - r["end"]) - abs(r["h_end"] - r["fixed_end"])))
     entries = {}
     for line in (args.dataset / "manifest.jsonl").read_text(encoding="utf-8").splitlines():
         if line.strip():
@@ -80,24 +90,26 @@ def main() -> None:
         t = np.linspace(t0, t0 + len(env) * win / rate, len(env))
         ax.fill_between(t, 0, env, color=WAVE_C, linewidth=0)
         ax.axvline(r["end"], color=MMS_C, linewidth=1.4)
+        ax.axvline(r["fixed_end"], color=FIX_C, linewidth=1.8)
         ax.axvline(r["h_end"], color=HUM_C, linewidth=1.4)
         lo, hi = sorted((r["end"], r["h_end"]))
-        ax.axvspan(lo, hi, color=HUM_C, alpha=.13, linewidth=0)
+        ax.axvspan(lo, hi, color=HUM_C, alpha=.10, linewidth=0)
         ax.set_xlim(t0, t1)
         ax.set_ylim(0, 1.05)
         ax.set_yticks([])
         ax.set_xticks([])
         for side in ("top", "right", "left", "bottom"):
             ax.spines[side].set_visible(False)
-        delta = (r["h_end"] - r["end"]) * 1000
+        was = abs(r["h_end"] - r["end"]) * 1000
+        now = abs(r["h_end"] - r["fixed_end"]) * 1000
         ax.text(t0, 1.0, r["word"][::-1], fontsize=8, va="top", ha="left", color="#1b1f24")
-        ax.text(t1, 1.0, f"{delta:+.0f} ms", fontsize=8, va="top", ha="right",
-                color=HUM_C if delta > 0 else MMS_C)
+        ax.text(t1, 1.0, f"{was:.0f} -> {now:.0f} ms", fontsize=8, va="top", ha="right",
+                color=FIX_C if now < was - 1 else ("#9ca3af" if now < was + 1 else MMS_C))
     for n in range(len(rows), per * args.columns):
         axes[n % per][n // per].set_visible(False)
 
     fig.suptitle(f"Word ends before a pause of {args.min_pause * 1000:.0f} ms or more  ·  "
-                 f"{len(rows)} words  ·  blue = MMS, green = person",
+                 f"{len(rows)} words  ·  blue = MMS, orange = corrected, green = person",
                  fontsize=13, x=0.005, ha="left", color="#1b1f24")
     fig.tight_layout(rect=(0, 0, 1, 0.985))
     args.out.parent.mkdir(parents=True, exist_ok=True)
