@@ -120,9 +120,18 @@ to be run again** — the correction needs the existing timings plus the audio, 
 
 Two rules, both fitted on the 72 marked clips and measured on clips they were not fitted on:
 
-- **every boundary** moves outward by an amount set by the letter at it. A word starting
-  with a plosive (ב ג ד כ פ ת) needs nothing; one starting with a fricative (ש ס ז ח) needs
-  44 ms. Text and timings only, no audio.
+- **every boundary** moves outward by an amount set by the letter *at that boundary*: the
+  word's first letter sets its start, its last letter sets its end. Starts move much more
+  than ends, because a word's onset is where CTC is latest.
+
+        letter class            start     end
+        plosive   ב ג ד כ פ ת    -2 ms    -3 ms
+        nasal     מ נ           +23 ms    +9 ms
+        glottal   א ה ע י       +24 ms   +24 ms
+        liquid    ל ר           +30 ms    +8 ms
+        fricative ש ס ז ח ו     +44 ms   +16 ms
+
+  Text and timings only, no audio.
 - **a word end with 100 ms or more of silence after it** is extended to where the sound
   actually stops: forward while the envelope stays above a fifth of that word's own peak, up
   to 100 ms. This one reads the waveform.
