@@ -112,3 +112,40 @@ python -m hebrew_training.align_tag_server --datasets-folder data/eval_runs/ivri
 ```
 then http://localhost:8091/?view=eval. Each clip in the per-clip table has an *open* link
 that shows every aligner's words as toggleable lanes under the human marks.
+
+## Correcting MMS
+
+`mms-corrected` is not another aligner. It is MMS's own output moved, so **MMS does not have
+to be run again** — the correction needs the existing timings plus the audio, and no model.
+
+Two rules, both fitted on the 72 marked clips and measured on clips they were not fitted on:
+
+- **every boundary** moves outward by an amount set by the letter at it. A word starting
+  with a plosive (ב ג ד כ פ ת) needs nothing; one starting with a fricative (ש ס ז ח) needs
+  44 ms. Text and timings only, no audio.
+- **a word end with 100 ms or more of silence after it** is extended to where the sound
+  actually stops: forward while the envelope stays above a fifth of that word's own peak, up
+  to 100 ms. This one reads the waveform.
+
+The second rule is the one that matters — it is where MMS is worst, cutting about 60 ms
+early — so running text-only gets roughly half the benefit.
+
+    29.5 -> 23.4 ms median, p90 90.5 -> 79.0        all boundaries
+    62.8 -> 54.0 ms median, p90 187 -> 133          word ends before a pause
+
+Measure it, and write the fitted numbers to `<run>/correction.json`:
+
+```
+python eval/correct_mms.py --run data/eval_runs/ivrit-ai
+```
+
+Apply it to a whole dataset, adding `mms-corrected` beside the existing labels (clips with
+no `mms` label are left alone):
+
+```
+python eval/push_corrected.py --manifest manifest.jsonl --audio data/datasets/ivrit-ai \
+    --correction data/eval_runs/ivrit-ai/correction.json --out manifest.new.jsonl
+```
+
+Needs numpy and soundfile only. `correction.json` can be reused as it is, or refitted on
+more marks by re-running the first command.
