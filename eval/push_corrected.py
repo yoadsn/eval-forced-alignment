@@ -75,6 +75,9 @@ def main() -> None:
         entry["labels"].append({"source": args.name, "words": out})
         done += 1
 
+    # An overlap is invisible to every per-boundary measure, so it is asserted here rather
+    # than hoped for; see no_overlap().
+    cm.no_overlap([lb["words"] for r in rows for lb in r["labels"] if lb["source"] == args.name])
     args.out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     print(f"{len(rows)} clips: {done} corrected, {skipped} had no {args.source!r} label and were left alone")
     print(f"{moved} words moved, {total_shift / max(moved, 1) * 1000:.1f} ms per boundary on average")
