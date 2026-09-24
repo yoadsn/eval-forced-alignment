@@ -72,6 +72,28 @@ def decay_end(env, start: float, end: float, limit: float, quiet: float) -> floa
     return max(end, i * HOP)
 
 
+def no_overlap(clips: list[list[dict]]) -> None:
+    """Refuse to write words that sit on top of each other.
+
+    Every measure in this work is taken per boundary against a human mark, so an overlap is
+    invisible to all of them -- two words can cross while both move closer to their targets,
+    which is how 222 overlapping pairs once went out to the live site unnoticed. A constraint
+    the scoring cannot see has to be asserted, not hoped for.
+
+    Each list is one clip's words in time order.
+    """
+    bad = [(a["word"], b["word"], (a["end"] - b["start"]) * 1000)
+           for words in clips for a, b in zip(words, words[1:])
+           if a["end"] - b["start"] > 1e-9]
+    if bad:
+        worst = max(x[2] for x in bad)
+        raise SystemExit(
+            f"refusing to write: {len(bad)} pairs of corrected words overlap, worst "
+            f"{worst:.0f} ms, e.g. {bad[0][0]!r} over {bad[0][1]!r}. That is a bug in the "
+            f"correction, not in the data."
+        )
+
+
 def corrected(bf, rows, model) -> dict:
     """Where every one of these words ends up, keyed by the row's identity.
 
@@ -255,15 +277,19 @@ def main() -> None:
             key = f"{r['clip']}#{r['who']}"
             by_key.setdefault(key, []).append(r)
         written = args.run / "labels" / f"{args.write}.jsonl"
-        with written.open("w", encoding="utf-8", newline="\n") as fh:
-            for key, rs in by_key.items():
-                words = [{"word": r["word"],
-                          "start": round(placed[id(r)][0], 4),
-                          "end": round(placed[id(r)][1], 4),
-                          **({"score": r["score"]} if r.get("score") is not None else {})}
-                         for r in sorted(rs, key=lambda r: r["start"])]
-                fh.write(json.dumps({"id": key, "words": words}, ensure_ascii=False) + "\n")
-        print(f"-> {written}")
+        lines, per_clip = [], []
+        for key, rs in by_key.items():
+            words = [{"word": r["word"],
+                      "start": round(placed[id(r)][0], 4),
+                      "end": round(placed[id(r)][1], 4),
+                      **({"score": r["score"]} if r.get("score") is not None else {})}
+                     for r in sorted(rs, key=lambda r: r["start"])]
+            per_clip.append(words)
+            lines.append(json.dumps({"id": key, "words": words}, ensure_ascii=False))
+        # Checked on the rounded values that go to disk, not on the floats behind them.
+        no_overlap(per_clip)
+        written.write_text("".join(x + "\n" for x in lines), encoding="utf-8")
+        print(f"-> {written}  ({sum(len(w) for w in per_clip)} words, no overlaps)")
 
 
 if __name__ == "__main__":
