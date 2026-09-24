@@ -54,15 +54,19 @@ def main() -> None:
             continue
         env = cm.envelope(args.audio / entry["audio"])
         ws = src["words"]
-        out = []
-        for i, w in enumerate(ws):
-            r = {"word": w["word"], "start": w["start"], "end": w["end"],
+        # The whole clip at once: a boundary is shared by two words, and correcting each
+        # against the other's original position lets them cross.
+        made = [{"word": w["word"], "start": w["start"], "end": w["end"],
+                 "clip": entry["id"], "who": None,
                  "prev_end": ws[i - 1]["end"] if i else 0.0,
                  "next_start": ws[i + 1]["start"] if i + 1 < len(ws) else None,
                  "gap_after": (ws[i + 1]["start"] if i + 1 < len(ws) else w["end"]) - w["end"],
                  "env": env}
-            start = cm.apply_start(bf, r, model["shifts"])
-            end = cm.apply_end(bf, r, model["shifts"], model["quiet"], model["cap"], model["pause_min"])
+                for i, w in enumerate(ws)]
+        placed = cm.corrected(bf, made, model)
+        out = []
+        for w, r in zip(ws, made):
+            start, end = placed[id(r)]
             total_shift += abs(start - w["start"]) + abs(end - w["end"])
             moved += 1
             out.append({**{k: v for k, v in w.items() if k not in ("start", "end")},

@@ -72,6 +72,26 @@ def decay_end(env, start: float, end: float, limit: float, quiet: float) -> floa
     return max(end, i * HOP)
 
 
+def corrected(bf, rows, model) -> dict:
+    """Where every one of these words ends up, keyed by the row's identity.
+
+    Rows are grouped back into the clips they came from and ordered by time, because the
+    correction is only well defined for a whole clip at once -- one word's end is the same
+    boundary as the next word's start.
+    """
+    by: dict[tuple, list] = {}
+    for r in rows:
+        by.setdefault((r["clip"], r.get("who")), []).append(r)
+    out = {}
+    for ws in by.values():
+        ws.sort(key=lambda r: r["start"])
+        placed = correct_clip(bf, ws, model["shifts"], model["quiet"], model["cap"],
+                              model["pause_min"])
+        for r, se in zip(ws, placed):
+            out[id(r)] = se
+    return out
+
+
 def fit(bf, rows, quiets=(0.05, 0.10, 0.15, 0.20, 0.30), caps=(0.1, 0.15, 0.2, 0.3, 0.5),
         pause_min=0.1) -> dict:
     """Shifts per letter class, then the energy rule's two numbers, in that order.
@@ -95,10 +115,12 @@ def fit(bf, rows, quiets=(0.05, 0.10, 0.15, 0.20, 0.30), caps=(0.1, 0.15, 0.2, 0
     best = (None, None, None)
     for quiet in quiets:
         for cap in caps:
-            err = []
-            for r in pre:
-                end = apply_end(bf, r, shifts, quiet, cap, pause_min)
-                err.append(abs(end - r["h_end"]))
+            # Scored through the clip-wide resolution, not word by word: a setting that
+            # reaches further than the gap allows must be judged on what it is finally
+            # given, not on what it asked for.
+            placed = corrected(bf, rows, {"shifts": shifts, "quiet": quiet, "cap": cap,
+                                          "pause_min": pause_min})
+            err = [abs(placed[id(r)][1] - r["h_end"]) for r in pre]
             score = statistics.fmean(err)
             if best[0] is None or score < best[0]:
                 best = (score, quiet, cap)
@@ -106,20 +128,54 @@ def fit(bf, rows, quiets=(0.05, 0.10, 0.15, 0.20, 0.30), caps=(0.1, 0.15, 0.2, 0
             "fitted_on_words": len(rows), "fitted_on_pre_pause_ends": len(pre)}
 
 
-def apply_start(bf, r, shifts) -> float:
+def wanted(bf, r, shifts, quiet, cap, pause_min) -> tuple[float, float]:
+    """How far this word would like each edge moved outward, before any neighbour is asked.
+
+    Nothing is clamped here. Clamping a word against its neighbour's *original* position is
+    what put 22% of pairs on top of each other: with a 16 ms gap, an end pushed out 8 ms and
+    the next start pulled back 8 ms each stayed inside the original gap, and still met in
+    the middle. A boundary belongs to two words, so it has to be settled once, by
+    correct_clip, and not twice.
+    """
     a = shifts["start"].get(bf.letter_class(bf.edge_letter(r["word"], "start")), shifts["start"]["_"])
-    return max(r["start"] - a, r["prev_end"])
-
-
-def apply_end(bf, r, shifts, quiet, cap, pause_min) -> float:
     b = shifts["end"].get(bf.letter_class(bf.edge_letter(r["word"], "end")), shifts["end"]["_"])
-    end = r["end"] + b
     if r["gap_after"] >= pause_min and r.get("env") is not None:
-        limit = min(r["end"] + cap, r["next_start"] if r["next_start"] is not None else r["end"] + cap)
-        end = max(end, decay_end(r["env"], r["start"], r["end"], limit, quiet))
-    if r["next_start"] is not None:
-        end = min(end, r["next_start"])
-    return max(end, r["start"] + 0.01)
+        grown = decay_end(r["env"], r["start"], r["end"], r["end"] + cap, quiet) - r["end"]
+        b = max(b, grown)
+    return max(a, 0.0), max(b, 0.0)
+
+
+def correct_clip(bf, rows, shifts, quiet, cap, pause_min) -> list[tuple[float, float]]:
+    """Correct every word of one clip together, so no two of them can cross.
+
+    `rows` are that clip's words in order. Each gap between two words is shared: the word on
+    the left wants to grow right into it, the word on the right wants to grow left. When
+    they want more than there is, both are scaled by the same factor so they meet exactly
+    and never pass. A gap of zero therefore moves nothing, which is the rule the user asked
+    for at the outset -- a word may move, but not across its neighbour.
+    """
+    ask = [wanted(bf, r, shifts, quiet, cap, pause_min) for r in rows]
+    starts = [r["start"] - ask[i][0] for i, r in enumerate(rows)]
+    ends = [r["end"] + ask[i][1] for i, r in enumerate(rows)]
+
+    # the clip's own edges
+    if rows:
+        starts[0] = max(starts[0], 0.0)
+        env = rows[-1].get("env")
+        if env is not None:
+            ends[-1] = min(ends[-1], len(env) * HOP)
+
+    for i in range(len(rows) - 1):
+        gap = rows[i + 1]["start"] - rows[i]["end"]
+        if gap <= 0:                       # already touching: neither may take anything
+            ends[i], starts[i + 1] = rows[i]["end"], rows[i + 1]["start"]
+            continue
+        want = ask[i][1] + ask[i + 1][0]
+        if want > gap:
+            scale = gap / want
+            ends[i] = rows[i]["end"] + ask[i][1] * scale
+            starts[i + 1] = rows[i + 1]["start"] - ask[i + 1][0] * scale
+    return [(s, max(e, s + 0.01)) for s, e in zip(starts, ends)]
 
 
 def attach_envelopes(rows, dataset: Path):
@@ -157,9 +213,10 @@ def main() -> None:
     held, held_end, held_pre = [], [], []
     for train_in_half in (True, False):
         model = fit(bf, [r for r in rows if (r["clip"] in half) == train_in_half])
-        for r in [r for r in rows if (r["clip"] in half) != train_in_half]:
-            s = apply_start(bf, r, model["shifts"])
-            e = apply_end(bf, r, model["shifts"], model["quiet"], model["cap"], model["pause_min"])
+        test = [r for r in rows if (r["clip"] in half) != train_in_half]
+        placed = corrected(bf, test, model)
+        for r in test:
+            s, e = placed[id(r)]
             held += [abs(s - r["h_start"]) * 1000, abs(e - r["h_end"]) * 1000]
             held_end.append(abs(e - r["h_end"]) * 1000)
             if r["gap_after"] >= 0.3:
@@ -192,6 +249,7 @@ def main() -> None:
     print(f"-> {out}")
 
     if args.write:
+        placed = corrected(bf, rows, model)
         by_key: dict[str, list] = {}
         for r in rows:
             key = f"{r['clip']}#{r['who']}"
@@ -200,9 +258,8 @@ def main() -> None:
         with written.open("w", encoding="utf-8", newline="\n") as fh:
             for key, rs in by_key.items():
                 words = [{"word": r["word"],
-                          "start": round(apply_start(bf, r, model["shifts"]), 4),
-                          "end": round(apply_end(bf, r, model["shifts"], model["quiet"],
-                                                 model["cap"], model["pause_min"]), 4),
+                          "start": round(placed[id(r)][0], 4),
+                          "end": round(placed[id(r)][1], 4),
                           **({"score": r["score"]} if r.get("score") is not None else {})}
                          for r in sorted(rs, key=lambda r: r["start"])]
                 fh.write(json.dumps({"id": key, "words": words}, ensure_ascii=False) + "\n")

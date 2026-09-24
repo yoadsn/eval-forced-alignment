@@ -53,9 +53,9 @@ def main() -> None:
     cm_spec.loader.exec_module(cm)
     all_rows = cm.attach_envelopes(bf.build(args.run, "mms", {"probe"}), args.dataset)
     model = json.loads((args.run / "correction.json").read_text(encoding="utf-8"))
+    placed = cm.corrected(bf, all_rows, model)
     for r in all_rows:
-        r["fixed_end"] = cm.apply_end(bf, r, model["shifts"], model["quiet"],
-                                      model["cap"], model["pause_min"])
+        r["fixed_end"] = placed[id(r)][1]
     rows = [r for r in all_rows if r["gap_after"] >= args.min_pause]
     rows.sort(key=lambda r: -(abs(r["h_end"] - r["end"]) - abs(r["h_end"] - r["fixed_end"])))
     entries = {}
