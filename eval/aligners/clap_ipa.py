@@ -78,6 +78,11 @@ def main() -> None:
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--size", default="base", choices=["tiny", "base", "small"])
+    # Word mode averages every phone of a word into one vector and matches that against the
+    # frames, which throws away the word's internal structure -- and this model was built to
+    # align phones. Phone mode gives each phone its own unit and takes a word's span from its
+    # first and last phone, which is what the paper actually evaluates.
+    p.add_argument("--unit", default="phone", choices=["phone", "word"])
     p.add_argument("--device", default="cpu")
     args = p.parse_args()
 
@@ -141,9 +146,19 @@ def main() -> None:
                               return_tensors="pt")
             frames = max(1, int(round(len(wav) / 16000 / FRAME)))
 
-            # A boundary either side, so the first word has something to start after and the
-            # last has something to end before.
-            units = [SEP] + [ipa[i] for i in keep] + [SEP]
+            # A boundary either side, so the first unit has something to start after and
+            # the last has something to end before. `span[k]` is the (first, last) index in
+            # `units` belonging to word k.
+            units, span = [SEP], []
+            for i in keep:
+                if args.unit == "word":
+                    span.append((len(units), len(units)))
+                    units.append(ipa[i])
+                else:
+                    first = len(units)
+                    units.extend(list(ipa[i]))
+                    span.append((first, len(units) - 1))
+            units.append(SEP)
             tokens = tokenizer(units, return_attention_mask=False, return_length=True,
                                return_token_type_ids=False, add_special_tokens=False)
             ids = torch.tensor(list(itertools.chain.from_iterable(tokens["input_ids"]))).long().unsqueeze(0)
@@ -164,11 +179,12 @@ def main() -> None:
                 failed.append((row["id"], f"{len(last)} boundaries for {len(units)} units"))
                 continue
 
-            # Unit u's last frame is where unit u+1 begins, so word k runs from the end of
-            # unit k to the end of unit k+1.
+            # Unit u's last frame is where unit u+1 begins, so a unit spanning indices
+            # a..b runs from the end of unit a-1 to the end of unit b.
             timed = []
             for k, i in enumerate(keep):
-                start, end = last[k] * FRAME, last[k + 1] * FRAME
+                a, b = span[k]
+                start, end = last[a - 1] * FRAME, last[b] * FRAME
                 timed.append({"word": words[i], "start": round(start, 4),
                               "end": round(max(end, start + FRAME), 4)})
             handle.write(json.dumps({"id": row["id"], "words": timed}, ensure_ascii=False) + "\n")
