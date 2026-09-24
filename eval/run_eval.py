@@ -66,7 +66,7 @@ ALIGNERS = {
 # Labels that are produced from another label rather than by aligning audio, so they have no
 # runner here. eval/correct_mms.py writes this one; if its file is present it is scored and
 # shown next to the aligner it was derived from.
-DERIVED = ("mms-corrected",)
+DERIVED = ("mms-corrected", "mfa-viter")
 
 
 def per_annotator_counts(marks) -> list[tuple[str, int]]:
