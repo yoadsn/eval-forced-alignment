@@ -60,13 +60,12 @@ ALIGNERS = {
     # timit one: "across all tested languages, the TIMIT-trained model consistently
     # outperforms the Buckeye-trained version". Its Hebrew table is not buckeye's.
     "mwa-buckeye": ("mwa.py", "EVAL_PY_MWA", ["--model", "buckeye"], {"PYTHONUTF8": "1"}),
-    "mwa-timit": ("mwa.py", "EVAL_PY_MWA", ["--model", "timit"], {"PYTHONUTF8": "1"}),
 }
 
 # Labels that are produced from another label rather than by aligning audio, so they have no
 # runner here. eval/correct_mms.py writes this one; if its file is present it is scored and
 # shown next to the aligner it was derived from.
-DERIVED = ("mms-corrected",)
+DERIVED = ("mms-corrected", "mfa-viter-heldout", "clap-ipa-phone")
 
 
 def per_annotator_counts(marks) -> list[tuple[str, int]]:

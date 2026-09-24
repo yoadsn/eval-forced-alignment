@@ -198,11 +198,20 @@ def holm(pvalues: list[float]) -> list[float]:
     return adjusted
 
 
-def boundary_errors(pairs: list[tuple[dict, dict]]) -> list[float]:
+def boundary_errors(pairs: list[tuple[dict, dict]], edges: str = "both") -> list[float]:
+    """How far each boundary sits from the human's, in milliseconds.
+
+    `edges` exists because not every aligner predicts both. MWA outputs one time per word,
+    its end, and its own CSV writer fills the starts in by copying the previous word's end;
+    scoring those as predictions charges it for numbers it never made. The ends-only column
+    is the like-for-like comparison.
+    """
     out = []
     for h, a in pairs:
-        out.append(abs(float(h["start"]) - float(a["start"])) * 1000)
-        out.append(abs(float(h["end"]) - float(a["end"])) * 1000)
+        if edges in ("both", "start"):
+            out.append(abs(float(h["start"]) - float(a["start"])) * 1000)
+        if edges in ("both", "end"):
+            out.append(abs(float(h["end"]) - float(a["end"])) * 1000)
     return out
 
 
@@ -271,6 +280,7 @@ def evaluate(
     }
 
     errors_by_aligner: dict[str, dict[str, list[float]]] = {}
+    ends_by_aligner: dict[str, dict[str, list[float]]] = {}
     pair_labels = pair_labels or {}
 
     def aligner_words(source, cid, annotator):
@@ -283,7 +293,7 @@ def evaluate(
 
     for source in sorted(set(aligners) | set(pair_labels)):
         words_by_id = aligners.get(source, {})
-        pooled, per_clip, paired, human_words = [], {}, 0, 0
+        pooled, ends, per_clip, per_clip_ends, paired, human_words = [], [], {}, {}, 0, 0
         for annotator, marks in humans.items():
             for cid, hwords in marks.items():
                 awords = aligner_words(source, cid, annotator)
@@ -291,13 +301,18 @@ def evaluate(
                     continue
                 pairs = pair_words(hwords, awords)
                 errs = boundary_errors(pairs)
+                end_errs = boundary_errors(pairs, "end")
                 pooled += errs
+                ends += end_errs
                 paired += len(pairs)
                 human_words += sum(1 for w in hwords if not w.get("added"))
                 per_clip.setdefault(cid, []).extend(errs)
+                per_clip_ends.setdefault(cid, []).extend(end_errs)
         stats = summarise(pooled)
         stats["words_paired_pct"] = round(100 * paired / human_words, 1) if human_words else 0.0
+        stats["ends"] = summarise(ends)
         result["aligners"][source] = stats
+        ends_by_aligner[source] = {c: e for c, e in per_clip_ends.items() if e}
         per_clip = {cid: errs for cid, errs in per_clip.items() if errs}
         errors_by_aligner[source] = per_clip
         for cid, errs in per_clip.items():
@@ -307,17 +322,20 @@ def evaluate(
     # is already as good as the humans it is being judged by.
     names = sorted(humans)
     human_per_clip: dict[str, list[float]] = {}
+    human_ends_per_clip: dict[str, list[float]] = {}
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             a, b = humans[names[i]], humans[names[j]]
             for cid in set(a) & set(b):
-                human_per_clip.setdefault(cid, []).extend(
-                    boundary_errors(pair_words(a[cid], b[cid]))
-                )
+                pairs = pair_words(a[cid], b[cid])
+                human_per_clip.setdefault(cid, []).extend(boundary_errors(pairs))
+                human_ends_per_clip.setdefault(cid, []).extend(boundary_errors(pairs, "end"))
     between = [e for errs in human_per_clip.values() for e in errs]
     if between:
         result["human_agreement"] = summarise(between)
         result["human_agreement"]["clips"] = len(human_per_clip)
+        result["human_agreement"]["ends"] = summarise(
+            [e for errs in human_ends_per_clip.values() for e in errs])
 
     # ---- uncertainty ----
     rng = random.Random(seed)
@@ -331,13 +349,18 @@ def evaluate(
 
     tests = []
     scored = sorted(s for s, pc in errors_by_aligner.items() if pc)
-    for a, b in itertools.combinations(scored, 2):
-        for name in TESTED_METRICS:
-            t = paired_test(errors_by_aligner[a], errors_by_aligner[b], name, rng, draws)
-            if t is None:
-                continue
-            better = a if (t["diff"] < 0) == lower_is_better(name) else b
-            tests.append({"a": a, "b": b, "metric": name, "better": better, **t})
+    # Tested on both bases. An aligner that only predicts word ends is charged for its
+    # invented starts in the first and judged on its own output in the second, and a verdict
+    # that flips between the two is worth knowing about.
+    for edges, table in (("both", errors_by_aligner), ("end", ends_by_aligner)):
+        for a, b in itertools.combinations(scored, 2):
+            for name in TESTED_METRICS:
+                t = paired_test(table[a], table[b], name, rng, draws)
+                if t is None:
+                    continue
+                better = a if (t["diff"] < 0) == lower_is_better(name) else b
+                tests.append({"a": a, "b": b, "metric": name, "edges": edges,
+                              "better": better, **t})
     for t, adj in zip(tests, holm([t["p"] for t in tests])):
         t["p_holm"] = round(adj, 4)
         t["significant"] = adj < 0.05
