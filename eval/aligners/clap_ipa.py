@@ -37,6 +37,14 @@ SEP = "[SEP]"
 FRAME = 0.02
 _PUNCT = re.compile(r"[^\w֐-׿']+", re.UNICODE)
 
+# Phonikud spells Hebrew accurately: resh as the uvular ʁ, het/khaf as χ, g as the script ɡ.
+# Every one of those is a single token in the IPA tokenizer, so nothing is unknown -- but
+# this model learned its phone embeddings from a 1000-language corpus in which the plain
+# r, x and g are enormously more common than their exact Hebrew realisations. Accuracy in
+# the transcription is not the same as being in the model's distribution, and which matters
+# more is a question for the data, so it is a flag rather than a decision.
+COMMON = {"ʁ": "r", "χ": "x", "ɡ": "g"}
+
 
 def done_ids(out: Path) -> set[str]:
     ids = set()
@@ -83,6 +91,8 @@ def main() -> None:
     # align phones. Phone mode gives each phone its own unit and takes a word's span from its
     # first and last phone, which is what the paper actually evaluates.
     p.add_argument("--unit", default="phone", choices=["phone", "word"])
+    p.add_argument("--normalize", action="store_true",
+                   help="Map ʁ x ɡ to the commoner r, x, g -- see COMMON.")
     p.add_argument("--device", default="cpu")
     args = p.parse_args()
 
@@ -118,7 +128,8 @@ def main() -> None:
             out = phonemize(g2p.add_diacritics(bare))
         except Exception:  # noqa: BLE001
             return ""
-        return "".join(c for c in out if c not in (STRESS, PREFIX) and not c.isspace())
+        bare_ipa = "".join(c for c in out if c not in (STRESS, PREFIX) and not c.isspace())
+        return "".join(COMMON.get(c, c) for c in bare_ipa) if args.normalize else bare_ipa
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     ok, failed = 0, []
