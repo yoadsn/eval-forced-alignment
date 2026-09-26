@@ -53,6 +53,7 @@ words change, its old alignment is dropped and it is aligned again.
 | `mwa-buckeye`, `mwa-timit` | `mwa.py` | MWA's own venv (`EFA_PY_MWA`, `EFA_MWA_REPO`) | cpu |
 | `clap-ipa` | `clap_ipa.py` | `envs/clap` | cpu |
 | `mfa-viter` | `viter_align.py` | `envs/viter` + the viter binary and a trained model | needs `EFA_VITER_*` |
+| `mfa-viter-hebrew-graphemes` | `viter_align.py --graphemes` | `envs/viter` + a pretrained model | needs `EFA_VITER_BIN`, `EFA_VITER_GRAPHEMES_*` |
 | `mms-corrected` | derived from `mms` by `correction/` | the orchestrator's own | inherits from `mms` |
 
 The interpreter for env `X` is `envs/X/.venv`, built with `uv sync --project envs/X`. You can
@@ -85,7 +86,7 @@ only need to build the ones you plan to use:
     uv sync --project envs/ctc        # wav2vec2-hebrew, mms
     uv sync --project envs/stable_ts  # whisper-stable-ts
     uv sync --project envs/clap       # clap-ipa
-    uv sync --project envs/viter      # mfa-viter (also needs the binary + a model, below)
+    uv sync --project envs/viter      # mfa-viter, mfa-viter-hebrew-graphemes (need a model too, below)
 
 An aligner whose env isn't built simply appears as `unavailable` in the result, with the
 reason, and the rest still run.
@@ -98,22 +99,60 @@ package list this project was checked against), then point `.env` at it:
     EFA_PY_MWA=/path/to/Multilingual-Word-Aligner/.venv/bin/python
     EFA_MWA_REPO=/path/to/Multilingual-Word-Aligner
 
-**mfa-viter** needs more than `envs/viter` (which only has the Python side: phonikud, for
-building a dictionary). It also needs the `viter` binary itself and a trained model, since
-there is no official Hebrew MFA model:
+**mfa-viter** (and `mfa-viter-hebrew-graphemes`) need more than `envs/viter`'s Python side
+(phonikud, for building a dictionary): they also need the `viter` binary, and a model, since
+there is no official Hebrew MFA model.
 
-1. Install the binary: `cargo binstall --git https://github.com/thewh1teagle/viter viter`,
-   or download one from its releases page.
-2. Build a corpus and dictionary: `uv run --project envs/viter python aligners/viter_setup.py
+**The binary.** `envs/viter`'s `pyproject.toml` lists `viter` itself as a dependency, so
+`uv sync --project envs/viter` (the same command every env needs, above) already gives you
+`envs/viter/.venv/bin/viter` -- nothing extra to install. That's what `EFA_VITER_BIN` below
+points at; `cargo binstall --git https://github.com/thewh1teagle/viter viter`, or a binary
+from [its releases page](https://github.com/thewh1teagle/viter/releases), works too if you'd
+rather keep it outside the venv.
+
+**mfa-viter** trains its own model, on a corpus that must not include the gold clips:
+
+1. Build a corpus and dictionary: `uv run --project envs/viter python aligners/viter_setup.py
    --dataset <dataset> --out data/viter` (optionally widen the corpus first with
    `aligners/knesset_corpus.py`).
-3. Train: `viter train data/viter/corpus --dict data/viter/dict.txt -o data/viter/hebrew.viter`.
-   The model must not have seen the gold clips.
-4. Point `.env` at all three:
+2. Train: `envs/viter/.venv/bin/viter train data/viter/corpus --dict data/viter/dict.txt
+   -o data/viter/hebrew.viter`.
+3. Point `.env` at all three:
 
        EFA_VITER_MODEL=data/viter/hebrew.viter
        EFA_VITER_DICT=data/viter/dict.txt
-       EFA_VITER_BIN=/path/to/viter        # or "viter" if it's on PATH
+       EFA_VITER_BIN=envs/viter/.venv/bin/viter   # or "viter" if it's on PATH
+
+**mfa-viter-hebrew-graphemes** needs no training: it's viter's own pretrained Hebrew model,
+`hebrew_graphemes` (50 h of YouTube speech, letter-per-phone dictionary), from
+[models-v1.0](https://github.com/thewh1teagle/viter/releases/tag/models-v1.0). Despite being
+off-domain (it never saw Knesset-style speech), it lands close to `mms`/`mms-corrected` on
+this gold set -- see the table below.
+
+1. Download the model and its dictionary:
+
+       curl -sLO --output-dir data/viter-hebrew-graphemes \
+         https://github.com/thewh1teagle/viter/releases/download/models-v1.0/hebrew_graphemes.viter
+       curl -sLO --output-dir data/viter-hebrew-graphemes \
+         https://github.com/thewh1teagle/viter/releases/download/models-v1.0/hebrew_graphemes.dict
+
+2. Point `.env` at them (`EFA_VITER_BIN` is shared with `mfa-viter`, above):
+
+       EFA_VITER_GRAPHEMES_MODEL=data/viter-hebrew-graphemes/hebrew_graphemes.viter
+       EFA_VITER_GRAPHEMES_DICT=data/viter-hebrew-graphemes/hebrew_graphemes.dict
+
+   Its dictionary is letter-per-phone rather than Phonikud IPA, so `viter_align.py --graphemes`
+   (which `aligners.toml` already passes for this aligner) fills in any word the dictionary is
+   missing by splitting it into its own Hebrew letters, not by phonemizing it.
+
+   **`--dict` is read-only.** `hebrew_graphemes.dict` (103k words) is a downloaded release
+   asset, so `viter_align.py` never writes into it -- words it fills in (numbers, English
+   tokens, anything not in the 103k) go into `<dict>.added.tsv` beside it instead, and the two
+   are merged into a scratch file that is what actually gets passed to `viter align`. Also
+   note the real format: one phone per tab-separated field after the word (not the whole
+   pronunciation in a single space-joined field, which is what `viter_setup.py`'s own output
+   uses) -- `viter_align.py` handles both, but a script reading this file another way needs to
+   split on every tab, not just the first one.
 
 **Overriding an interpreter.** Any env can be pointed elsewhere with `EFA_PY_<ENV>`
 (uppercased) in `.env` instead of building `envs/<name>/.venv` -- this is how MWA's own venv

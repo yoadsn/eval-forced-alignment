@@ -1,12 +1,15 @@
 [project]
 name = "efa-env-viter"
 version = "0.1.0"
-description = "Interpreter for aligners/viter_align.py and viter_setup.py (the binary is separate)"
+description = "Interpreter for aligners/viter_align.py and viter_setup.py, plus the viter binary itself"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "phonikud",
     "phonikud-onnx",
     "huggingface-hub",
+    # Ships the `viter` CLI too (envs/viter/.venv/bin/viter), so `uv sync --project envs/viter`
+    # is enough on its own -- no cargo binstall or manual download needed. See README.md.
+    "viter",
 ]
 
 [tool.uv]

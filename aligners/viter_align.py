@@ -3,15 +3,33 @@
     python viter_align.py --manifest clips.jsonl --out mfa-viter.jsonl \\
         --model data/viter/hebrew.viter --dict data/viter/dict.txt
 
+    # thewh1teagle's pretrained hebrew_graphemes model (github.com/thewh1teagle/viter,
+    # release models-v1.0) instead of one trained here:
+    python viter_align.py --manifest clips.jsonl --out mfa-viter.jsonl --graphemes \\
+        --model data/viter-hebrew-graphemes/hebrew_graphemes.viter \\
+        --dict data/viter-hebrew-graphemes/hebrew_graphemes.dict
+
 MFA itself was never in this comparison because it needs a pronunciation dictionary and an
 acoustic model per language and there is no official Hebrew one -- the MWA paper hits the
 same wall and drops MFA for Hebrew. viter is that recipe reimplemented, and it will train
 its own model, so the gap is closable: `viter_setup.py` builds the corpus and a Phonikud
-dictionary, `viter train` fits the model, and this runs the alignment.
+dictionary, `viter train` fits the model, and this runs the alignment. It also has a Hebrew
+model of its own now, `hebrew_graphemes` (see `--graphemes` below and README.md), trained on
+Knesset-unrelated YouTube audio.
 
 Any word the dictionary is missing is added here rather than left to the OOV phone, which
-would silently wreck the alignment around it. Words that cannot be phonemized at all are
-reported and their clip is skipped.
+would silently wreck the alignment around it. Without `--graphemes` this uses Phonikud IPA,
+same as `viter_setup.py`; words that cannot be phonemized at all are reported and their clip
+is skipped. With `--graphemes`, a missing word is just split into its own letters -- the
+convention `hebrew_graphemes.dict` itself uses -- so only a non-Hebrew token (a digit, a
+Latin word) is left OOV.
+
+--dict is read-only: a downloaded model's dictionary (like hebrew_graphemes.dict) is a
+released asset, not something this script owns, so it is never rewritten. Missing words are
+instead cached in a sidecar next to it, `<dict>.added.tsv` (its own `--added-dict` to
+relocate), and the two are merged into a throwaway file for `viter align` to actually read.
+A previous version of this script wrote fills directly back into --dict; if that ever ran
+against a real dictionary, re-download it -- it is silently wrong now (see below).
 
 Input rows: {id, audio, duration, text, words}. Output rows: {id, words}. Clips already in
 --out are skipped, so a re-run after more tagging aligns only the new ones.
@@ -33,7 +51,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from viter_setup import clean_word, split_phones  # noqa: E402
+from viter_setup import clean_word, split_graphemes, split_phones  # noqa: E402
 
 
 def done_ids(out: Path) -> set[str]:
@@ -46,6 +64,23 @@ def done_ids(out: Path) -> set[str]:
 
 def failed_path(out: Path) -> Path:
     return out.with_suffix(".failed.jsonl")
+
+
+def read_dict(path: Path) -> dict[str, str]:
+    """word -> phones (space-joined), from a tab-separated dictionary.
+
+    Released viter dictionaries (hebrew_graphemes.dict, hebrew_ipa.dict, ...) put one phone
+    per tab-field after the word; `viter_setup.py`'s own output puts all of them in a single
+    tab-field, already space-separated. Joining whatever tab-fields follow the word with a
+    space handles both without caring which one a given file is.
+    """
+    entries = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "\t" not in line:
+            continue
+        word, *phones = line.split("\t")
+        entries[word] = " ".join(phones)
+    return entries
 
 
 def read_textgrid_words(path: Path) -> list[tuple[float, float, str]]:
@@ -77,6 +112,10 @@ def main() -> None:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--model", type=Path, required=True)
     p.add_argument("--dict", dest="dictionary", type=Path, required=True)
+    p.add_argument("--added-dict", type=Path,
+                    help="Where words missing from --dict are cached, one per line, same "
+                    "tab-separated word/phones format. Defaults to '<dict>.added.tsv'. "
+                    "--dict itself is never modified.")
     p.add_argument("--viter", default=shutil.which("viter") or "viter",
                    help="The viter binary; defaults to the one on PATH.")
     p.add_argument("--device", default="cpu", help="Accepted for the common contract; viter is CPU-only.")
@@ -86,6 +125,9 @@ def main() -> None:
     # silently missing from the comparison, which is worse than a slow one.
     p.add_argument("--beam", default="100")
     p.add_argument("--retry-beam", dest="retry_beam", default="800")
+    p.add_argument("--graphemes", action="store_true",
+                    help="The dictionary is letter-per-phone (thewh1teagle's hebrew_graphemes), "
+                    "so missing words are filled in by splitting letters, not Phonikud IPA.")
     args = p.parse_args()
 
     rows = [json.loads(l) for l in args.manifest.read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -95,38 +137,56 @@ def main() -> None:
     if not rows:
         return
 
-    # 1. the words this manifest needs, and whatever the dictionary is missing
-    entries = {}
-    for line in args.dictionary.read_text(encoding="utf-8").splitlines():
-        if "\t" in line:
-            entries[line.split("\t")[0]] = line.split("\t")[1]
+    # 1. the words this manifest needs, and whatever --dict is missing. --dict is a released
+    #    asset (or viter_setup.py's own output) and is only ever read; fills go in
+    #    --added-dict instead, so a re-run grows that cache rather than the source.
+    added_path = args.added_dict or args.dictionary.with_suffix(args.dictionary.suffix + ".added.tsv")
+    entries = read_dict(args.dictionary)
+    added_entries = read_dict(added_path) if added_path.exists() else {}
+    entries.update(added_entries)
+
     needed = {clean_word(w) for r in rows for w in (r.get("words") or r["text"].split())}
     needed = {w for w in needed if w}
     missing = sorted(needed - set(entries))
     if missing:
-        from huggingface_hub import hf_hub_download
-        from phonikud import phonemize
-        from phonikud_onnx import Phonikud
+        if args.graphemes:
+            # No G2P needed: a grapheme dictionary (thewh1teagle's hebrew_graphemes.dict) maps
+            # every word to its own letters, which split_graphemes reproduces directly.
+            added = 0
+            for w in missing:
+                phones = split_graphemes(w)
+                if phones:
+                    entries[w] = added_entries[w] = " ".join(phones)
+                    added += 1
+        else:
+            from huggingface_hub import hf_hub_download
+            from phonikud import phonemize
+            from phonikud_onnx import Phonikud
 
-        model = Phonikud(hf_hub_download("thewh1teagle/phonikud-onnx", "phonikud-1.0.int8.onnx"))
-        added = 0
-        for w in missing:
-            try:
-                phones = split_phones(phonemize(model.add_diacritics(w)))
-            except Exception:  # noqa: BLE001
-                phones = []
-            if phones:
-                entries[w] = " ".join(phones)
-                added += 1
-        args.dictionary.write_text(
-            "\n".join(f"{w}\t{p}" for w, p in sorted(entries.items())) + "\n", encoding="utf-8")
-        print(f"  dictionary: {added} of {len(missing)} missing words added", flush=True)
+            model = Phonikud(hf_hub_download("thewh1teagle/phonikud-onnx", "phonikud-1.0.int8.onnx"))
+            added = 0
+            for w in missing:
+                try:
+                    phones = split_phones(phonemize(model.add_diacritics(w)))
+                except Exception:  # noqa: BLE001
+                    phones = []
+                if phones:
+                    entries[w] = added_entries[w] = " ".join(phones)
+                    added += 1
+        added_path.write_text(
+            "\n".join(f"{w}\t{p}" for w, p in sorted(added_entries.items())) + "\n", encoding="utf-8")
+        print(f"  dictionary: {added} of {len(missing)} missing words added to {added_path}", flush=True)
 
-    # 2. a corpus of just these clips. '#' separates clip from annotator in the id and is
-    #    not wanted in a filename, so it is swapped for a marker and swapped back after.
+    # 2. a corpus of just these clips, and a merged dictionary in the same scratch directory
+    #    for viter to read -- never --dict itself. '#' separates clip from annotator in the
+    #    id and is not wanted in a filename, so it is swapped for a marker and swapped back
+    #    after.
     work = Path(tempfile.mkdtemp(prefix="viter_"))
     corpus, aligned = work / "in", work / "out"
     corpus.mkdir()
+    merged_dict = work / "dict.txt"
+    merged_dict.write_text(
+        "\n".join(f"{w}\t{p}" for w, p in sorted(entries.items())) + "\n", encoding="utf-8")
     names, failed = {}, []
     for r in rows:
         words = [clean_word(w) for w in (r.get("words") or r["text"].split())]
@@ -146,7 +206,7 @@ def main() -> None:
 
     if names:
         subprocess.run([args.viter, "align", str(corpus), str(args.model),
-                        "--dict", str(args.dictionary), "--beam", args.beam,
+                        "--dict", str(merged_dict), "--beam", args.beam,
                         "--retry-beam", args.retry_beam, "-o", str(aligned)], check=False)
 
     # 3. back onto the manifest's own words, by position

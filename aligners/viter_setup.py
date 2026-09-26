@@ -29,6 +29,14 @@ STRESS, PREFIX = "ˈ", "|"
 DIGRAPHS = ("ts", "tʃ", "dʒ")
 _PUNCT = re.compile(r"[^\w֐-׿']+", re.UNICODE)
 
+# Grapheme dictionary convention (thewh1teagle/viter's hebrew_graphemes.dict): final letters
+# collapse to their base form and a geresh after ג/ז/צ/ת makes a single phone (ts/tʃ/dʒ-style
+# consonants), matching what the dictionary itself does letter for letter -- checked against
+# all 103k of its entries.
+_FINAL_LETTERS = {"ם": "מ", "ן": "נ", "ץ": "צ", "ף": "פ", "ך": "כ"}
+_GERESH_LETTERS = {"ג", "ז", "צ", "ת"}
+_HEBREW_LETTER = re.compile(r"[\u05d0-\u05ea]")
+
 
 def split_phones(ipa: str) -> list[str]:
     """IPA string to a list of phones, dropping the stress mark and the prefix bar."""
@@ -43,6 +51,32 @@ def split_phones(ipa: str) -> list[str]:
             out.append(s[i])
             i += 1
     return out
+
+
+def split_graphemes(word: str) -> list[str] | None:
+    """A Hebrew word to its per-letter phones, for the `hebrew_graphemes` dictionary.
+
+    No G2P needed: every Hebrew letter is its own phone, so unlike `split_phones` this never
+    fails on a word that is genuinely Hebrew. None if the word has anything else in it (a
+    digit, a Latin letter), which the dictionary itself cannot cover either.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(word):
+        c = word[i]
+        if c == "'":
+            i += 1
+            continue
+        if not _HEBREW_LETTER.fullmatch(c):
+            return None
+        base = _FINAL_LETTERS.get(c, c)
+        if i + 1 < len(word) and word[i + 1] == "'" and base in _GERESH_LETTERS:
+            out.append(base + "'")
+            i += 2
+        else:
+            out.append(base)
+            i += 1
+    return out or None
 
 
 def clean_word(w: str) -> str:

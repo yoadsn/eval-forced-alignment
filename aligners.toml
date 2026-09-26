@@ -73,6 +73,16 @@ needs = ["EFA_VITER_MODEL", "EFA_VITER_DICT", "EFA_VITER_BIN"]
 devices = ["cpu"]
 description = "MFA recipe via viter, acoustic model trained on Knesset audio"
 
+# thewh1teagle's own pretrained Hebrew model, no training needed here; see README.md.
+[aligners.mfa-viter-hebrew-graphemes]
+runner = "viter_align.py"
+env = "viter"
+args = ["--model", "{EFA_VITER_GRAPHEMES_MODEL}", "--dict", "{EFA_VITER_GRAPHEMES_DICT}",
+        "--viter", "{EFA_VITER_BIN}", "--graphemes"]
+needs = ["EFA_VITER_GRAPHEMES_MODEL", "EFA_VITER_GRAPHEMES_DICT", "EFA_VITER_BIN"]
+devices = ["cpu"]
+description = "MFA recipe via viter, pretrained hebrew_graphemes model (thewh1teagle/viter, models-v1.0)"
+
 # Not an aligner: MMS's own output, moved by correction/correct_mms.py. Needs no model and
 # runs in the orchestrator's own environment, after `mms`.
 [derived.mms-corrected]
