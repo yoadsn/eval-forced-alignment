@@ -1,0 +1,81 @@
+# Every aligner the evaluation knows about. Each one runs as its own program in its own
+# interpreter, because their dependencies cannot share one: torch 2.4 + numpy<2 for
+# stable-ts and MWA, a newer torch for CTC, a native binary for viter.
+#
+#   runner      script under aligners/, speaking the contract in README.md
+#   env         which interpreter: envs/<env>/.venv, or $EFA_PY_<ENV> to point elsewhere
+#   args        extra arguments after --manifest/--out/--device
+#   env_vars    extra environment for the subprocess
+#   needs       environment variables that must be set, each substituted into args as {NAME}
+#   devices     devices the runner can use, best first; the first one this machine has wins
+#   description shown in the viewer beside the aligner's name
+#
+# An aligner whose interpreter or `needs` is missing is not dropped: it goes into the result
+# as "unavailable", with the reason, so a table missing a row says why.
+
+[aligners.wav2vec2-hebrew]
+runner = "ctc.py"
+env = "ctc"
+args = ["--model", "imvladikon/wav2vec2-xls-r-300m-hebrew"]
+devices = ["cuda", "mps", "cpu"]
+description = "CTC forced alignment — imvladikon/wav2vec2-xls-r-300m-hebrew"
+
+[aligners.mms]
+runner = "ctc.py"
+env = "ctc"
+args = ["--model", "MahmoudAshraf/mms-300m-1130-forced-aligner"]
+devices = ["cuda", "mps", "cpu"]
+description = "CTC forced alignment — Meta MMS, 1,130 languages, romanized"
+
+[aligners.whisper-stable-ts]
+runner = "stable_ts.py"
+env = "stable_ts"
+args = ["--model", "ivrit-ai/whisper-large-v3-turbo-ct2"]
+# ctranslate2 has no Metal backend
+devices = ["cuda", "cpu"]
+# see stable_ts.py: two OpenMP runtimes, made safe by one thread each
+env_vars = { KMP_DUPLICATE_LIB_OK = "TRUE", OMP_NUM_THREADS = "1", PYTHONUTF8 = "1" }
+description = "stable-ts align on faster-whisper — ivrit.ai whisper-large-v3-turbo"
+
+# The paper's unseen-language numbers, Hebrew included, are the timit checkpoint's.
+[aligners.mwa-buckeye]
+runner = "mwa.py"
+env = "mwa"
+args = ["--mwa-repo", "{EFA_MWA_REPO}", "--model", "buckeye"]
+needs = ["EFA_MWA_REPO"]
+devices = ["cuda", "cpu"]
+env_vars = { PYTHONUTF8 = "1" }
+description = "Multilingual Word Aligner, buckeye checkpoint (arXiv 2606.10675)"
+
+[aligners.mwa-timit]
+runner = "mwa.py"
+env = "mwa"
+args = ["--mwa-repo", "{EFA_MWA_REPO}", "--model", "timit"]
+needs = ["EFA_MWA_REPO"]
+devices = ["cuda", "cpu"]
+env_vars = { PYTHONUTF8 = "1" }
+description = "Multilingual Word Aligner, timit checkpoint (arXiv 2606.10675)"
+
+[aligners.clap-ipa]
+runner = "clap_ipa.py"
+env = "clap"
+args = ["--size", "base", "--unit", "phone"]
+devices = ["cuda", "cpu"]
+description = "IPA-Aligner (CLAP-IPA), Phonikud IPA, phone-level DTW"
+
+# Needs a model trained by `viter train` on a corpus built by viter_setup.py; see
+# README.md. The model must not have seen the gold clips.
+[aligners.mfa-viter]
+runner = "viter_align.py"
+env = "viter"
+args = ["--model", "{EFA_VITER_MODEL}", "--dict", "{EFA_VITER_DICT}", "--viter", "{EFA_VITER_BIN}"]
+needs = ["EFA_VITER_MODEL", "EFA_VITER_DICT", "EFA_VITER_BIN"]
+devices = ["cpu"]
+description = "MFA recipe via viter, acoustic model trained on Knesset audio"
+
+# Not an aligner: MMS's own output, moved by correction/correct_mms.py. Needs no model and
+# runs in the orchestrator's own environment, after `mms`.
+[derived.mms-corrected]
+from = "mms"
+correction = "correction/correction.json"
+description = "MMS, then a shift per letter class and, before a pause, the end extended to where the sound stops"

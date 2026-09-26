@@ -1,0 +1,19 @@
+[project]
+name = "efa-env-clap"
+version = "0.1.0"
+description = "Interpreter for aligners/clap_ipa.py"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "torch>=2.4,<2.9",
+    "transformers>=4.44,<5",
+    "librosa>=0.10",
+    "soundfile",
+    "phonikud",
+    "phonikud-onnx",
+    "huggingface-hub",
+    # IPA-Aligner's own package; not on PyPI
+    "clap @ git+https://github.com/lingjzhu/clap-ipa",
+]
+
+[tool.uv]
+package = false

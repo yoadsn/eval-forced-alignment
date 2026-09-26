@@ -1,0 +1,19 @@
+[project]
+name = "eval-forced-alignment"
+version = "0.1.0"
+description = "Score Hebrew forced aligners against the human-tagged gold set"
+requires-python = ">=3.11"
+# The orchestrator only: reading the gold set, scoring, and mms-corrected. No aligner runs
+# in this environment -- each has its own under envs/, see README.md.
+dependencies = [
+    "huggingface-hub>=0.25",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+    "soundfile>=0.12",
+]
+
+[dependency-groups]
+research = ["matplotlib", "scikit-learn", "scipy"]
+
+[tool.uv]
+package = false

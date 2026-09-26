@@ -1,0 +1,59 @@
+{
+  "shifts": {
+    "start": {
+      "_": 0.0233,
+      "glottal": 0.0231,
+      "plosive": -0.0022,
+      "nasal": 0.0229,
+      "fricative": 0.0425,
+      "liquid": 0.0294,
+      "other": 0.0233
+    },
+    "end": {
+      "_": 0.0133,
+      "glottal": 0.0286,
+      "plosive": -0.0013,
+      "liquid": 0.0107,
+      "fricative": 0.0176,
+      "nasal": 0.0099,
+      "other": 0.0133
+    }
+  },
+  "quiet": 0.3,
+  "cap": 0.15,
+  "pause_min": 0.1,
+  "fitted_on_words": 1270,
+  "fitted_on_pre_pause_ends": 315,
+  "held_out": {
+    "all": {
+      "boundaries": 2540,
+      "median_ms": 23.7,
+      "mean_ms": 43.9,
+      "p90_ms": 79.7,
+      "within_10ms": 25.2,
+      "within_25ms": 52.0,
+      "within_50ms": 77.4,
+      "within_100ms": 94.1
+    },
+    "ends": {
+      "boundaries": 1270,
+      "median_ms": 26.0,
+      "mean_ms": 46.3,
+      "p90_ms": 87.4,
+      "within_10ms": 22.7,
+      "within_25ms": 48.5,
+      "within_50ms": 74.2,
+      "within_100ms": 92.8
+    },
+    "ends_before_a_pause": {
+      "boundaries": 159,
+      "median_ms": 54.6,
+      "mean_ms": 75.4,
+      "p90_ms": 140.0,
+      "within_10ms": 10.1,
+      "within_25ms": 27.7,
+      "within_50ms": 47.2,
+      "within_100ms": 78.0
+    }
+  }
+}
