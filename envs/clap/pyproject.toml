@@ -6,6 +6,9 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "torch>=2.4,<2.9",
     "transformers>=4.44,<5",
+    # DebertaV2Tokenizer (charsiu/IPATokenizer) is sentencepiece-backed; without this
+    # transformers raises ImportError the moment the tokenizer is loaded.
+    "sentencepiece>=0.2",
     "librosa>=0.10",
     "soundfile",
     "phonikud",
